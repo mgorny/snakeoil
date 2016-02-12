@@ -5,6 +5,7 @@
 import errno
 import fcntl
 import grp
+import multiprocessing
 import os
 import stat
 import sys
@@ -312,19 +313,42 @@ class FsLockTest(TempDirMixin):
         self.assertRaises(osutils.NonExistent, osutils.FsLock,
                           pjoin(self.dir, 'missing'))
 
+    @staticmethod
+    def run_subprocess_test(sub_func, *args):
+        def sub_test(queue, sub_func, *args):
+            try:
+                sub_func(*args)
+            except Exception as e:
+                queue.put(e)
+            else:
+                queue.put(None)
+
+        queue = multiprocessing.Queue()
+        process = multiprocessing.Process(target=sub_test,
+                args=(queue, sub_func) + args)
+        process.start()
+        process.join()
+        exc = queue.get()
+        if exc is not None:
+            raise exc
+
     def test_fslock_read_lock(self):
         path = pjoin(self.dir, 'lockfile-read')
         lock = osutils.FsLock(path, True)
         # do this all non-blocking to avoid hanging tests
         self.assertTrue(lock.acquire_read_lock(False))
-        # file should exist now
-        with open(path, 'r+') as f:
-            # acquire and release a read lock
-            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
-            # we can't acquire an exclusive lock
-            self.assertRaises(
-                IOError, fcntl.flock, f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def sub_test(path):
+            # file should exist now
+            with open(path, 'r+') as f:
+                # acquire and release a read lock
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+                # we can't acquire an exclusive lock
+                self.assertRaises(
+                    IOError, fcntl.flock, f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        self.run_subprocess_test(sub_test, path)
 
     def test_fslock_release_read_lock(self):
         path = pjoin(self.dir, 'lockfile-release-read')
@@ -332,11 +356,15 @@ class FsLockTest(TempDirMixin):
         # do this all non-blocking to avoid hanging tests
         self.assertTrue(lock.acquire_read_lock(False))
         lock.release_read_lock()
-        # file should exist now
-        with open(path, 'r+') as f:
-            # but now we can
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
+
+        def sub_test(path):
+            # file should exist now
+            with open(path, 'r+') as f:
+                # but now we can
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+        self.run_subprocess_test(sub_test, path)
 
     def test_fslock_write_lock(self):
         path = pjoin(self.dir, 'lockfile-write')
@@ -344,10 +372,14 @@ class FsLockTest(TempDirMixin):
         # do this all non-blocking to avoid hanging tests
         # acquire an exclusive/write lock
         self.assertTrue(lock.acquire_write_lock(False))
-        # file should exist now
-        with open(path, 'r+') as f:
-            self.assertRaises(
-                IOError, fcntl.flock, f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def sub_test(path):
+            # file should exist now
+            with open(path, 'r+') as f:
+                self.assertRaises(
+                    IOError, fcntl.flock, f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        self.run_subprocess_test(sub_test, path)
 
     def test_fslock_release_write_lock(self):
         path = pjoin(self.dir, 'lockfile-release-write')
@@ -356,10 +388,14 @@ class FsLockTest(TempDirMixin):
         # acquire an exclusive/write lock
         self.assertTrue(lock.acquire_write_lock(False))
         lock.release_write_lock()
-        # file should exist now
-        with open(path, 'r+') as f:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
+
+        def sub_test(path):
+            # file should exist now
+            with open(path, 'r+') as f:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+        self.run_subprocess_test(sub_test, path)
 
     def test_fslock_downgrade_lock(self):
         path = pjoin(self.dir, 'lockfile-downgrade')
@@ -369,12 +405,16 @@ class FsLockTest(TempDirMixin):
         self.assertTrue(lock.acquire_write_lock(False))
         # downgrade to read lock
         self.assertTrue(lock.acquire_read_lock())
-        # file should exist now
-        with open(path, 'r+') as f:
-            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
-            self.assertRaises(
-                IOError, fcntl.flock, f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def sub_test(path):
+            # file should exist now
+            with open(path, 'r+') as f:
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+                self.assertRaises(
+                    IOError, fcntl.flock, f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        self.run_subprocess_test(sub_test, path)
 
     def test_fslock_release_downgraded_lock(self):
         path = pjoin(self.dir, 'lockfile-release-downgraded')
@@ -386,10 +426,14 @@ class FsLockTest(TempDirMixin):
         self.assertTrue(lock.acquire_read_lock())
         # and release
         lock.release_read_lock()
-        # file should exist now
-        with open(path, 'r+') as f:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
+
+        def sub_test(path):
+            # file should exist now
+            with open(path, 'r+') as f:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+        self.run_subprocess_test(sub_test, path)
 
 
 class TestAccess(TempDirMixin):
